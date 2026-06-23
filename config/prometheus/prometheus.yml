@@ -1,0 +1,48 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'production'
+    environment: 'ubuntu-2204'
+
+# 告警规则文件路径
+rule_files:
+  - "rules/*.yml"
+
+# 告警管理器地址
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["localhost:9093"]
+
+# 采集任务配置
+scrape_configs:
+  # Prometheus 自身监控
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # 主机监控
+  - job_name: "node_exporter"
+    static_configs:
+      - targets: ["localhost:9100"]
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(.*)'
+        target_label: instance
+        replacement: '${1}'
+
+  # Nginx 监控
+  - job_name: "nginx_exporter"
+    static_configs:
+      - targets: ["localhost:9113"]
+
+  # MySQL 监控
+  - job_name: "mysql_exporter"
+    static_configs:
+      - targets: ["localhost:9104"]
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(.*)'
+        target_label: instance
+        replacement: '${1}'

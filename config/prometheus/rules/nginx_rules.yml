@@ -1,0 +1,32 @@
+groups:
+  - name: nginx_alerts
+    rules:
+      # Nginx 服务宕机
+      - alert: NginxDown
+        expr: nginx_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Nginx 服务宕机"
+          description: "Nginx 服务已超过1分钟不可用"
+
+      # 活跃连接数过高
+      - alert: NginxHighConnections
+        expr: nginx_connections_active > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nginx 活跃连接数过高"
+          description: "活跃连接数已超过 1000，当前值：{{ $value }}"
+
+      # 5xx 错误率过高
+      - alert: NginxHighErrorRate
+        expr: rate(nginx_http_requests_total{status=~"5.."}[5m]) / rate(nginx_http_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nginx 5xx 错误率过高"
+          description: "5xx 错误率已超过 5%，当前值：{{ $value | printf \"%.2f\" }}%"

@@ -1,0 +1,21 @@
+{{ define "dingtalk.default.message" }}
+{{- if eq .Status "firing" }}
+**[告警触发] {{ .GroupLabels.alertname }}**
+**告警级别：** {{ .GroupLabels.severity }}
+**告警实例：** {{ .GroupLabels.instance }}
+**告警时间：** {{ .StartsAt.Format "2006-01-02 15:04:05" }}
+**告警详情：**
+{{ range .Alerts }}
+- {{ .Annotations.summary }}
+{{- if .Annotations.description }}
+  详情：{{ .Annotations.description }}
+{{- end }}
+{{- end }}
+{{- else }}
+**[告警恢复] {{ .GroupLabels.alertname }}**
+**告警级别：** {{ .GroupLabels.severity }}
+**告警实例：** {{ .GroupLabels.instance }}
+**恢复时间：** {{ .EndsAt.Format "2006-01-02 15:04:05" }}
+**告警已恢复**
+{{- end }}
+{{ end }}

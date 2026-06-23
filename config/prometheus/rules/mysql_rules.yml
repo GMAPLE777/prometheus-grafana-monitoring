@@ -1,0 +1,42 @@
+groups:
+  - name: mysql_alerts
+    rules:
+      # MySQL 服务宕机
+      - alert: MySQLDown
+        expr: mysql_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MySQL 服务宕机"
+          description: "MySQL 服务已超过1分钟不可用"
+
+      # 连接数过高
+      - alert: MySQLHighConnections
+        expr: mysql_global_status_threads_connected > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MySQL 连接数过高"
+          description: "当前连接数已超过 100，当前值：{{ $value }}"
+
+      # 慢查询过多
+      - alert: MySQLSlowQueries
+        expr: rate(mysql_global_status_slow_queries[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MySQL 慢查询过多"
+          description: "慢查询速率已超过 1/s，当前值：{{ $value | printf \"%.2f\" }}/s"
+
+      # 主从复制延迟
+      - alert: MySQLReplicationLag
+        expr: mysql_slave_status_seconds_behind_master > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MySQL 主从复制延迟"
+          description: "复制延迟已超过 30 秒，当前值：{{ $value }}s"
