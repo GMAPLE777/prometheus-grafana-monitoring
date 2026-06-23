@@ -39,6 +39,9 @@ services:
       - '--web.external-url=http://localhost:9093'
       - '--cluster.listen-address=0.0.0.0:9094'
       - '--log.level=info'
+    environment:
+      # 替换为实际的钉钉机器人 token
+      - DINGTALK_TOKEN=YOUR_TOKEN
     networks:
       - monitoring
 
@@ -50,7 +53,8 @@ services:
       - "3000:3000"
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./config/grafana/provisioning:/etc/grafana/provisioning
+      # 使用 Docker 专用的数据源配置
+      - ./config/grafana/provisioning/datasources/prometheus-docker.yml:/etc/grafana/provisioning/datasources/prometheus.yml
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin

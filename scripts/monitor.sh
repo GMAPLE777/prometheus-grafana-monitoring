@@ -1,7 +1,15 @@
 #!/bin/bash
 # 监控系统健康检查脚本
 
+set -euo pipefail
+
 LOG_FILE="/var/log/monitoring_health.log"
+
+# 配置阈值（可通过环境变量覆盖）
+CPU_THRESHOLD="${CPU_THRESHOLD:-80}"
+MEMORY_THRESHOLD="${MEMORY_THRESHOLD:-80}"
+DISK_THRESHOLD="${DISK_THRESHOLD:-80}"
+MAX_RESTART_ATTEMPTS="${MAX_RESTART_ATTEMPTS:-3}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
@@ -21,15 +29,22 @@ check_services() {
             log "[ERROR] $service is not running"
             all_ok=false
             
-            # 自动重启尝试
-            log "尝试重启 $service..."
-            systemctl restart "$service"
-            sleep 5
+            # 自动重启尝试（限制次数）
+            local restart_count=0
+            while [ $restart_count -lt $MAX_RESTART_ATTEMPTS ]; do
+                log "尝试重启 $service... (第 $((restart_count+1)) 次)"
+                systemctl restart "$service" || true
+                sleep 5
+                
+                if systemctl is-active --quiet "$service"; then
+                    log "[RECOVERED] $service has been restarted"
+                    break
+                fi
+                ((restart_count++))
+            done
             
-            if systemctl is-active --quiet "$service"; then
-                log "[RECOVERED] $service has been restarted"
-            else
-                log "[FAILED] $service restart failed"
+            if [ $restart_count -eq $MAX_RESTART_ATTEMPTS ]; then
+                log "[FAILED] $service restart failed after $MAX_RESTART_ATTEMPTS attempts"
             fi
         fi
     done
@@ -66,16 +81,18 @@ check_ports() {
 check_targets() {
     log "=== 检查 Prometheus Targets ==="
     
-    local targets=$(curl -s http://localhost:9090/api/v1/targets 2>/dev/null)
-    
-    if [ $? -ne 0 ]; then
+    local targets
+    if ! targets=$(curl -sf --max-time 10 http://localhost:9090/api/v1/targets 2>/dev/null); then
         log "[ERROR] 无法连接到 Prometheus"
         return 1
     fi
     
-    local total=$(echo "$targets" | jq '.data.activeTargets | length')
-    local up=$(echo "$targets" | jq '[.data.activeTargets[] | select(.health == "up")] | length')
-    local down=$(echo "$targets" | jq '[.data.activeTargets[] | select(.health != "up")] | length')
+    local total
+    local up
+    local down
+    total=$(echo "$targets" | jq '.data.activeTargets | length')
+    up=$(echo "$targets" | jq '[.data.activeTargets[] | select(.health == "up")] | length')
+    down=$(echo "$targets" | jq '[.data.activeTargets[] | select(.health != "up")] | length')
     
     log "Targets 总数: $total"
     log "Targets 正常: $up"
@@ -95,14 +112,14 @@ check_targets() {
 check_alerts() {
     log "=== 检查告警状态 ==="
     
-    local alerts=$(curl -s http://localhost:9090/api/v1/alerts 2>/dev/null)
-    
-    if [ $? -ne 0 ]; then
+    local alerts
+    if ! alerts=$(curl -sf --max-time 10 http://localhost:9090/api/v1/alerts 2>/dev/null); then
         log "[ERROR] 无法连接到 Prometheus"
         return 1
     fi
     
-    local active_alerts=$(echo "$alerts" | jq '.data.alerts | length')
+    local active_alerts
+    active_alerts=$(echo "$alerts" | jq '.data.alerts | length')
     
     log "活跃告警数: $active_alerts"
     
@@ -120,28 +137,39 @@ check_alerts() {
 check_resources() {
     log "=== 检查资源使用 ==="
     
-    # CPU 使用率
-    local cpu_usage=$(top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1)
+    # CPU 使用率（使用 /proc/stat）
+    local cpu_idle
+    cpu_idle=$(awk '/^cpu / {print $5}' /proc/stat)
+    local cpu_total
+    cpu_total=$(awk '/^cpu / {sum=0; for(i=2;i<=NF;i++) sum+=$i; print sum}' /proc/stat)
+    local cpu_usage
+    cpu_usage=$(echo "scale=2; (1 - $cpu_idle / $cpu_total) * 100" | bc 2>/dev/null || echo "0")
     log "CPU 使用率: ${cpu_usage}%"
     
     # 内存使用率
-    local memory_usage=$(free | awk '/Mem/{printf "%.2f", $3/$2*100}')
+    local memory_usage
+    memory_usage=$(free | awk '/Mem/{printf "%.2f", $3/$2*100}')
     log "内存使用率: ${memory_usage}%"
     
     # 磁盘使用率
-    local disk_usage=$(df -h /opt/monitoring/ | awk 'NR==2{print $5}' | cut -d'%' -f1)
+    local disk_usage
+    disk_usage=$(df -h /opt/monitoring/ | awk 'NR==2{print $5}' | cut -d'%' -f1)
     log "磁盘使用率: ${disk_usage}%"
     
-    # 检查阈值
-    if (( $(echo "$cpu_usage > 80" | bc -l) )); then
+    # 检查阈值（使用整数比较）
+    local cpu_int
+    cpu_int=$(echo "$cpu_usage" | cut -d'.' -f1)
+    if [ "${cpu_int:-0}" -gt "$CPU_THRESHOLD" ]; then
         log "[WARNING] CPU 使用率过高"
     fi
     
-    if (( $(echo "$memory_usage > 80" | bc -l) )); then
+    local mem_int
+    mem_int=$(echo "$memory_usage" | cut -d'.' -f1)
+    if [ "${mem_int:-0}" -gt "$MEMORY_THRESHOLD" ]; then
         log "[WARNING] 内存使用率过高"
     fi
     
-    if [ "$disk_usage" -gt 80 ]; then
+    if [ "${disk_usage:-0}" -gt "$DISK_THRESHOLD" ]; then
         log "[WARNING] 磁盘使用率过高"
     fi
     
@@ -153,16 +181,19 @@ check_http() {
     log "=== 检查 HTTP 接口 ==="
     
     local urls=(
-        "http://localhost:9090/-/healthy:Prometheus"
-        "http://localhost:3000/api/health:Grafana"
-        "http://localhost:9093/-/healthy:Alertmanager"
+        "http://localhost:9090/-/healthy|Prometheus"
+        "http://localhost:3000/api/health|Grafana"
+        "http://localhost:9093/-/healthy|Alertmanager"
     )
     
     for url_info in "${urls[@]}"; do
-        local url=$(echo "$url_info" | cut -d':' -f1-2)
-        local name=$(echo "$url_info" | cut -d':' -f3)
+        local url
+        local name
+        url=$(echo "$url_info" | cut -d'|' -f1)
+        name=$(echo "$url_info" | cut -d'|' -f2)
         
-        local status_code=$(curl -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null)
+        local status_code
+        status_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || echo "000")
         
         if [ "$status_code" = "200" ]; then
             log "[OK] $name HTTP 接口正常"
@@ -178,14 +209,14 @@ check_http() {
 check_grafana_datasource() {
     log "=== 检查 Grafana 数据源 ==="
     
-    local datasources=$(curl -s http://localhost:3000/api/datasources 2>/dev/null)
-    
-    if [ $? -ne 0 ]; then
+    local datasources
+    if ! datasources=$(curl -sf --max-time 10 http://localhost:3000/api/datasources 2>/dev/null); then
         log "[ERROR] 无法连接到 Grafana"
         return 1
     fi
     
-    local datasource_count=$(echo "$datasources" | jq 'length')
+    local datasource_count
+    datasource_count=$(echo "$datasources" | jq 'length')
     log "数据源数量: $datasource_count"
     
     if [ "$datasource_count" -gt 0 ]; then

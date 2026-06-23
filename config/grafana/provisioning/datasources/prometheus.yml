@@ -4,9 +4,11 @@ datasources:
   - name: Prometheus
     type: prometheus
     access: proxy
+    # 裸机部署使用 http://localhost:9090
+    # Docker 部署使用 http://prometheus:9090
     url: http://localhost:9090
     isDefault: true
-    editable: true
+    editable: false  # 生产环境禁止编辑
     jsonData:
       timeInterval: '15s'
       httpMethod: POST

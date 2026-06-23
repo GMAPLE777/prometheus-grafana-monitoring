@@ -480,12 +480,15 @@ curl http://localhost:9090/api/v1/rules
 # 检查活跃告警
 curl http://localhost:9090/api/v1/alerts
 
-# 测试告警触发
-# 停止 Nginx 服务
-systemctl stop nginx
+# 测试告警触发（停止 Node Exporter 会触发 InstanceDown 告警）
+# 停止 Node Exporter 服务
+systemctl stop node_exporter
 
 # 等待 1 分钟后检查告警
 curl http://localhost:9090/api/v1/alerts | jq '.data.alerts[] | select(.labels.alertname == "InstanceDown")'
+
+# 恢复 Node Exporter 服务
+systemctl start node_exporter
 ```
 
 ## 6. 部署验证

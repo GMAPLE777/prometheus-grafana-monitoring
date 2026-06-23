@@ -1,13 +1,28 @@
 #!/bin/bash
 # 数据备份脚本
 
-set -e
+set -euo pipefail
 
 BACKUP_DIR="/opt/monitoring/backup/$(date +%Y%m%d_%H%M%S)"
 LOG_FILE="/var/log/monitoring_backup.log"
 
+# 备份保留天数
+BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+# 检查磁盘空间
+check_disk_space() {
+    local required_mb=1024
+    local available_mb
+    available_mb=$(df -m /opt/monitoring/backup/ | awk 'NR==2{print $4}')
+    
+    if [ "${available_mb:-0}" -lt "$required_mb" ]; then
+        log "[ERROR] 磁盘空间不足，需要至少 ${required_mb}MB（当前: ${available_mb}MB）"
+        exit 1
+    fi
 }
 
 # 创建备份目录
@@ -20,8 +35,12 @@ create_backup_dir() {
 backup_prometheus_config() {
     log "备份 Prometheus 配置..."
     
-    cp -r /opt/monitoring/prometheus/prometheus.yml "$BACKUP_DIR/"
-    cp -r /opt/monitoring/prometheus/rules "$BACKUP_DIR/"
+    if [ -f /opt/monitoring/prometheus/prometheus.yml ]; then
+        cp /opt/monitoring/prometheus/prometheus.yml "$BACKUP_DIR/"
+    fi
+    if [ -d /opt/monitoring/prometheus/rules ]; then
+        cp -r /opt/monitoring/prometheus/rules "$BACKUP_DIR/"
+    fi
     
     log "Prometheus 配置备份完成"
 }
@@ -31,15 +50,29 @@ backup_prometheus_data() {
     log "备份 Prometheus 数据..."
     
     # 创建快照
-    curl -X POST http://localhost:9090/api/v1/admin/tsdb/snapshot
+    local response
+    response=$(curl -sf -X POST http://localhost:9090/api/v1/admin/tsdb/snapshot 2>/dev/null || echo "")
     
-    # 备份快照数据
-    SNAPSHOT_DIR=$(ls -t /opt/monitoring/prometheus/data/snapshots/ | head -1)
-    if [ -n "$SNAPSHOT_DIR" ]; then
-        tar -czf "$BACKUP_DIR/prometheus_data.tar.gz" -C /opt/monitoring/prometheus/data/snapshots "$SNAPSHOT_DIR"
+    if [ -z "$response" ]; then
+        log "[WARNING] 无法创建 Prometheus 快照，跳过数据备份"
+        return 0
+    fi
+    
+    # 等待快照创建完成
+    local retries=0
+    local snapshot_dir=""
+    while [ $retries -lt 30 ]; do
+        snapshot_dir=$(ls -t /opt/monitoring/prometheus/data/snapshots/ 2>/dev/null | head -1)
+        [ -n "$snapshot_dir" ] && break
+        sleep 2
+        ((retries++))
+    done
+    
+    if [ -n "$snapshot_dir" ]; then
+        tar -czf "$BACKUP_DIR/prometheus_data.tar.gz" -C /opt/monitoring/prometheus/data/snapshots "$snapshot_dir"
         log "Prometheus 数据备份完成"
     else
-        log "未找到 Prometheus 快照"
+        log "[WARNING] 快照创建超时，跳过数据备份"
     fi
 }
 
@@ -47,8 +80,12 @@ backup_prometheus_data() {
 backup_alertmanager_config() {
     log "备份 Alertmanager 配置..."
     
-    cp -r /opt/monitoring/alertmanager/alertmanager.yml "$BACKUP_DIR/"
-    cp -r /opt/monitoring/alertmanager/templates "$BACKUP_DIR/"
+    if [ -f /opt/monitoring/alertmanager/alertmanager.yml ]; then
+        cp /opt/monitoring/alertmanager/alertmanager.yml "$BACKUP_DIR/"
+    fi
+    if [ -d /opt/monitoring/alertmanager/templates ]; then
+        cp -r /opt/monitoring/alertmanager/templates "$BACKUP_DIR/"
+    fi
     
     log "Alertmanager 配置备份完成"
 }
@@ -57,48 +94,74 @@ backup_alertmanager_config() {
 backup_alertmanager_data() {
     log "备份 Alertmanager 数据..."
     
-    tar -czf "$BACKUP_DIR/alertmanager_data.tar.gz" -C /opt/monitoring alertmanager/data
-    
-    log "Alertmanager 数据备份完成"
+    if [ -d /opt/monitoring/alertmanager/data ]; then
+        tar -czf "$BACKUP_DIR/alertmanager_data.tar.gz" -C /opt/monitoring alertmanager/data
+        log "Alertmanager 数据备份完成"
+    else
+        log "[WARNING] Alertmanager 数据目录不存在，跳过"
+    fi
 }
 
 # 备份 Grafana 配置
 backup_grafana_config() {
     log "备份 Grafana 配置..."
     
-    cp -r /etc/grafana "$BACKUP_DIR/"
-    
-    log "Grafana 配置备份完成"
+    if [ -d /etc/grafana ]; then
+        cp -r /etc/grafana "$BACKUP_DIR/"
+        log "Grafana 配置备份完成"
+    else
+        log "[WARNING] Grafana 配置目录不存在，跳过"
+    fi
 }
 
 # 备份 Grafana 数据
 backup_grafana_data() {
     log "备份 Grafana 数据..."
     
-    tar -czf "$BACKUP_DIR/grafana_data.tar.gz" -C /var/lib grafana
-    
-    log "Grafana 数据备份完成"
+    if [ -d /var/lib/grafana ]; then
+        tar -czf "$BACKUP_DIR/grafana_data.tar.gz" -C /var/lib grafana
+        log "Grafana 数据备份完成"
+    else
+        log "[WARNING] Grafana 数据目录不存在，跳过"
+    fi
 }
 
 # 备份 Exporter 配置
 backup_exporter_config() {
     log "备份 Exporter 配置..."
     
-    cp -r /opt/monitoring/exporters/mysqld_exporter/.my.cnf "$BACKUP_DIR/"
-    
-    log "Exporter 配置备份完成"
+    if [ -f /opt/monitoring/exporters/mysqld_exporter/.my.cnf ]; then
+        cp /opt/monitoring/exporters/mysqld_exporter/.my.cnf "$BACKUP_DIR/"
+        log "Exporter 配置备份完成"
+    else
+        log "[WARNING] MySQL Exporter 配置文件不存在，跳过"
+    fi
 }
 
 # 备份 Systemd 服务文件
 backup_systemd_services() {
     log "备份 Systemd 服务文件..."
     
-    cp /etc/systemd/system/prometheus.service "$BACKUP_DIR/"
-    cp /etc/systemd/system/node_exporter.service "$BACKUP_DIR/"
-    cp /etc/systemd/system/nginx_exporter.service "$BACKUP_DIR/"
-    cp /etc/systemd/system/mysql_exporter.service "$BACKUP_DIR/"
-    cp /etc/systemd/system/alertmanager.service "$BACKUP_DIR/"
-    cp /etc/systemd/system/grafana-server.service "$BACKUP_DIR/"
+    local service_files=(
+        "/etc/systemd/system/prometheus.service"
+        "/etc/systemd/system/node_exporter.service"
+        "/etc/systemd/system/nginx_exporter.service"
+        "/etc/systemd/system/mysql_exporter.service"
+        "/etc/systemd/system/alertmanager.service"
+    )
+    
+    # Grafana 服务文件可能在不同位置
+    if [ -f /etc/systemd/system/grafana-server.service ]; then
+        service_files+=("/etc/systemd/system/grafana-server.service")
+    elif [ -f /lib/systemd/system/grafana-server.service ]; then
+        service_files+=("/lib/systemd/system/grafana-server.service")
+    fi
+    
+    for service_file in "${service_files[@]}"; do
+        if [ -f "$service_file" ]; then
+            cp "$service_file" "$BACKUP_DIR/"
+        fi
+    done
     
     log "Systemd 服务文件备份完成"
 }
@@ -118,10 +181,10 @@ compress_backup() {
 cleanup_old_backups() {
     log "清理旧备份..."
     
-    # 保留最近 30 天的备份
-    find /opt/monitoring/backup/ -name "*.tar.gz" -mtime +30 -delete
+    # 使用更精确的文件名匹配模式
+    find /opt/monitoring/backup/ -name "????????_??????.tar.gz" -mtime +"$BACKUP_RETENTION_DAYS" -delete
     
-    log "旧备份清理完成"
+    log "旧备份清理完成（保留最近 ${BACKUP_RETENTION_DAYS} 天）"
 }
 
 # 验证备份
@@ -132,7 +195,8 @@ verify_backup() {
         log "[OK] 备份文件存在"
         
         # 检查备份文件大小
-        local size=$(du -sh "$BACKUP_DIR.tar.gz" | awk '{print $1}')
+        local size
+        size=$(du -sh "$BACKUP_DIR.tar.gz" | awk '{print $1}')
         log "备份文件大小: $size"
         
         # 检查备份文件完整性
@@ -142,6 +206,9 @@ verify_backup() {
             log "[ERROR] 备份文件损坏"
             return 1
         fi
+        
+        # 设置备份文件权限
+        chmod 600 "$BACKUP_DIR.tar.gz"
     else
         log "[ERROR] 备份文件不存在"
         return 1
@@ -162,6 +229,7 @@ main() {
         exit 1
     fi
     
+    check_disk_space
     create_backup_dir
     backup_prometheus_config
     backup_prometheus_data

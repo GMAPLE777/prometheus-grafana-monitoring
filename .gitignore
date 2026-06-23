@@ -41,3 +41,7 @@ docker-data/
 *.key
 *.crt
 *.p12
+
+# 本地文档（不提交到 GitHub）
+项目讲解.md
+简历项目介绍.md

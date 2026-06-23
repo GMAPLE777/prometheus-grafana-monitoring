@@ -21,9 +21,9 @@ groups:
           summary: "Nginx 活跃连接数过高"
           description: "活跃连接数已超过 1000，当前值：{{ $value }}"
 
-      # 5xx 错误率过高
+      # 5xx 错误率过高（使用 clamp_min 避免除零）
       - alert: NginxHighErrorRate
-        expr: rate(nginx_http_requests_total{status=~"5.."}[5m]) / rate(nginx_http_requests_total[5m]) > 0.05
+        expr: rate(nginx_http_requests_total{status=~"5.."}[5m]) / clamp_min(rate(nginx_http_requests_total[5m]), 1) > 0.05
         for: 5m
         labels:
           severity: warning

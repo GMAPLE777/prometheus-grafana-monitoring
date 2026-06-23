@@ -168,6 +168,51 @@ amtool check-config /opt/monitoring/alertmanager/alertmanager.yml
 - **MySQLSlowQueries**：慢查询过多（warning）
 - **MySQLReplicationLag**：主从复制延迟过高（warning）
 
+## 效果展示
+
+### Prometheus 监控页面
+
+**Targets 状态页**
+<!-- TODO: 替换为实际截图 -->
+![Prometheus Targets](docs/images/prometheus-targets.png)
+> 所有采集目标状态为 UP，指标正常采集
+
+**告警规则页**
+<!-- TODO: 替换为实际截图 -->
+![Prometheus Alerts](docs/images/prometheus-alerts.png)
+> 11 条告警规则已配置并激活
+
+### Grafana 可视化大盘
+
+**主机监控大盘**
+<!-- TODO: 替换为实际截图 -->
+![Node Exporter Dashboard](docs/images/grafana-node-exporter.png)
+> CPU、内存、磁盘、网络等核心指标实时展示
+
+**MySQL 监控大盘**
+<!-- TODO: 替换为实际截图 -->
+![MySQL Dashboard](docs/images/grafana-mysql.png)
+> 连接数、查询数、慢查询、InnoDB 指标监控
+
+**Nginx 监控大盘**
+<!-- TODO: 替换为实际截图 -->
+![Nginx Dashboard](docs/images/grafana-nginx.png)
+> 活跃连接数、请求速率、状态码分布
+
+### 告警通知
+
+**钉钉告警通知**
+<!-- TODO: 替换为实际截图 -->
+![DingTalk Alert](docs/images/dingtalk-alert.png)
+> 告警触发时自动推送钉钉群通知
+
+**告警恢复通知**
+<!-- TODO: 替换为实际截图 -->
+![DingTalk Recovery](docs/images/dingtalk-recovery.png)
+> 问题解决后自动推送恢复通知
+
+---
+
 ## Grafana 大盘
 
 ### 预置大盘 ID

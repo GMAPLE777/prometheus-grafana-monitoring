@@ -2,9 +2,31 @@
 # 一键部署脚本
 # 功能：自动化部署所有监控组件
 
-set -e
+set -euo pipefail
 
 echo "开始部署 Prometheus + Grafana 监控体系..."
+
+# 版本配置（可通过环境变量覆盖）
+PROMETHEUS_VERSION="${PROMETHEUS_VERSION:-2.45.0}"
+NODE_EXPORTER_VERSION="${NODE_EXPORTER_VERSION:-1.6.1}"
+NGINX_EXPORTER_VERSION="${NGINX_EXPORTER_VERSION:-0.11.0}"
+MYSQL_EXPORTER_VERSION="${MYSQL_EXPORTER_VERSION:-0.15.0}"
+ALERTMANAGER_VERSION="${ALERTMANAGER_VERSION:-0.26.0}"
+GRAFANA_VERSION="${GRAFANA_VERSION:-10.0.3}"
+
+# MySQL 监控账号配置（必须通过环境变量设置）
+MYSQL_EXPORTER_USER="${MYSQL_EXPORTER_USER:-exporter}"
+MYSQL_EXPORTER_PASSWORD="${MYSQL_EXPORTER_PASSWORD:?请设置 MYSQL_EXPORTER_PASSWORD 环境变量}"
+
+# 钉钉 Webhook Token（必须通过环境变量设置）
+DINGTALK_TOKEN="${DINGTALK_TOKEN:?请设置 DINGTALK_TOKEN 环境变量}"
+
+# 中断处理
+cleanup() {
+    log_warn "部署被中断"
+    exit 130
+}
+trap cleanup INT TERM
 
 # 颜色定义
 RED='\033[0;31m'
@@ -36,7 +58,7 @@ check_system() {
     
     # 检查硬件资源
     CPU_CORES=$(nproc)
-    MEMORY_GB=$(free -g | awk '/Mem/{print $2}')
+    MEMORY_MB=$(free -m | awk '/Mem/{print $2}')
     DISK_GB=$(df -BG / | awk 'NR==2{print $2}' | sed 's/G//')
     
     if [ "$CPU_CORES" -lt 2 ]; then
@@ -44,8 +66,8 @@ check_system() {
         exit 1
     fi
     
-    if [ "$MEMORY_GB" -lt 4 ]; then
-        log_error "内存不足，建议 4GB 及以上"
+    if [ "$MEMORY_MB" -lt 4096 ]; then
+        log_error "内存不足，建议 4GB 及以上（当前: ${MEMORY_MB}MB）"
         exit 1
     fi
     
@@ -55,7 +77,7 @@ check_system() {
     fi
     
     log_info "CPU 核心数: $CPU_CORES"
-    log_info "内存大小: ${MEMORY_GB}GB"
+    log_info "内存大小: ${MEMORY_MB}MB"
     log_info "磁盘大小: ${DISK_GB}GB"
     
     # 检查网络连通性
@@ -107,13 +129,15 @@ deploy_prometheus() {
     cd /opt/monitoring
     
     # 下载 Prometheus
-    if [ ! -f "prometheus-2.45.0.linux-amd64.tar.gz" ]; then
-        wget https://github.com/prometheus/prometheus/releases/download/v2.45.0/prometheus-2.45.0.linux-amd64.tar.gz
+    if [ ! -f "prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz" ]; then
+        wget --timeout=30 --tries=3 "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz"
     fi
     
-    # 解压并重命名
-    tar -zxf prometheus-2.45.0.linux-amd64.tar.gz
-    mv prometheus-2.45.0.linux-amd64 prometheus
+    # 解压并重命名（幂等性处理）
+    rm -rf prometheus-${PROMETHEUS_VERSION}.linux-amd64
+    tar -zxf "prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz"
+    rm -rf prometheus
+    mv "prometheus-${PROMETHEUS_VERSION}.linux-amd64" prometheus
     
     # 复制配置文件
     cp "$(dirname "$0")/../config/prometheus/prometheus.yml" /opt/monitoring/prometheus/
@@ -166,13 +190,15 @@ deploy_node_exporter() {
     cd /opt/monitoring/exporters
     
     # 下载 Node Exporter
-    if [ ! -f "node_exporter-1.6.1.linux-amd64.tar.gz" ]; then
-        wget https://github.com/prometheus/node_exporter/releases/download/v1.6.1/node_exporter-1.6.1.linux-amd64.tar.gz
+    if [ ! -f "node_exporter-${NODE_EXPORTER_VERSION}.linux-amd64.tar.gz" ]; then
+        wget --timeout=30 --tries=3 "https://github.com/prometheus/node_exporter/releases/download/v${NODE_EXPORTER_VERSION}/node_exporter-${NODE_EXPORTER_VERSION}.linux-amd64.tar.gz"
     fi
     
-    # 解压并重命名
-    tar -zxf node_exporter-1.6.1.linux-amd64.tar.gz
-    mv node_exporter-1.6.1.linux-amd64 node_exporter
+    # 解压并重命名（幂等性处理）
+    rm -rf "node_exporter-${NODE_EXPORTER_VERSION}.linux-amd64"
+    tar -zxf "node_exporter-${NODE_EXPORTER_VERSION}.linux-amd64.tar.gz"
+    rm -rf node_exporter
+    mv "node_exporter-${NODE_EXPORTER_VERSION}.linux-amd64" node_exporter
     
     # 创建 Systemd 服务
     cat > /etc/systemd/system/node_exporter.service << 'EOF'
@@ -243,12 +269,13 @@ EOF
     cd /opt/monitoring/exporters
     
     # 下载 Nginx Exporter
-    if [ ! -f "nginx-prometheus-exporter_0.11.0_linux_amd64.tar.gz" ]; then
-        wget https://github.com/nginxinc/nginx-prometheus-exporter/releases/download/v0.11.0/nginx-prometheus-exporter_0.11.0_linux_amd64.tar.gz
+    if [ ! -f "nginx-prometheus-exporter_${NGINX_EXPORTER_VERSION}_linux_amd64.tar.gz" ]; then
+        wget --timeout=30 --tries=3 "https://github.com/nginxinc/nginx-prometheus-exporter/releases/download/v${NGINX_EXPORTER_VERSION}/nginx-prometheus-exporter_${NGINX_EXPORTER_VERSION}_linux_amd64.tar.gz"
     fi
     
-    # 解压并重命名
-    tar -zxf nginx-prometheus-exporter_0.11.0_linux_amd64.tar.gz
+    # 解压并重命名（幂等性处理）
+    rm -rf nginx_exporter
+    tar -zxf "nginx-prometheus-exporter_${NGINX_EXPORTER_VERSION}_linux_amd64.tar.gz"
     mv nginx-prometheus-exporter nginx_exporter
     
     # 创建 Systemd 服务
@@ -288,19 +315,21 @@ deploy_mysql_exporter() {
     cd /opt/monitoring/exporters
     
     # 下载 MySQL Exporter
-    if [ ! -f "mysqld_exporter-0.15.0.linux-amd64.tar.gz" ]; then
-        wget https://github.com/prometheus/mysqld_exporter/releases/download/v0.15.0/mysqld_exporter-0.15.0.linux-amd64.tar.gz
+    if [ ! -f "mysqld_exporter-${MYSQL_EXPORTER_VERSION}.linux-amd64.tar.gz" ]; then
+        wget --timeout=30 --tries=3 "https://github.com/prometheus/mysqld_exporter/releases/download/v${MYSQL_EXPORTER_VERSION}/mysqld_exporter-${MYSQL_EXPORTER_VERSION}.linux-amd64.tar.gz"
     fi
     
-    # 解压并重命名
-    tar -zxf mysqld_exporter-0.15.0.linux-amd64.tar.gz
-    mv mysqld_exporter-0.15.0.linux-amd64 mysqld_exporter
+    # 解压并重命名（幂等性处理）
+    rm -rf "mysqld_exporter-${MYSQL_EXPORTER_VERSION}.linux-amd64"
+    tar -zxf "mysqld_exporter-${MYSQL_EXPORTER_VERSION}.linux-amd64.tar.gz"
+    rm -rf mysqld_exporter
+    mv "mysqld_exporter-${MYSQL_EXPORTER_VERSION}.linux-amd64" mysqld_exporter
     
-    # 创建配置文件
-    cat > /opt/monitoring/exporters/mysqld_exporter/.my.cnf << 'EOF'
+    # 创建配置文件（使用环境变量）
+    cat > /opt/monitoring/exporters/mysqld_exporter/.my.cnf << EOF
 [client]
-user=exporter
-password=Exporter@123
+user=${MYSQL_EXPORTER_USER}
+password=${MYSQL_EXPORTER_PASSWORD}
 host=localhost
 port=3306
 EOF
@@ -351,17 +380,22 @@ deploy_alertmanager() {
     cd /opt/monitoring
     
     # 下载 Alertmanager
-    if [ ! -f "alertmanager-0.26.0.linux-amd64.tar.gz" ]; then
-        wget https://github.com/prometheus/alertmanager/releases/download/v0.26.0/alertmanager-0.26.0.linux-amd64.tar.gz
+    if [ ! -f "alertmanager-${ALERTMANAGER_VERSION}.linux-amd64.tar.gz" ]; then
+        wget --timeout=30 --tries=3 "https://github.com/prometheus/alertmanager/releases/download/v${ALERTMANAGER_VERSION}/alertmanager-${ALERTMANAGER_VERSION}.linux-amd64.tar.gz"
     fi
     
-    # 解压并重命名
-    tar -zxf alertmanager-0.26.0.linux-amd64.tar.gz
-    mv alertmanager-0.26.0.linux-amd64 alertmanager
+    # 解压并重命名（幂等性处理）
+    rm -rf "alertmanager-${ALERTMANAGER_VERSION}.linux-amd64"
+    tar -zxf "alertmanager-${ALERTMANAGER_VERSION}.linux-amd64.tar.gz"
+    rm -rf alertmanager
+    mv "alertmanager-${ALERTMANAGER_VERSION}.linux-amd64" alertmanager
     
     # 复制配置文件
     cp "$(dirname "$0")/../config/alertmanager/alertmanager.yml" /opt/monitoring/alertmanager/
     cp "$(dirname "$0")/../config/alertmanager/templates/"*.tmpl /opt/monitoring/alertmanager/templates/
+    
+    # 替换钉钉 Token
+    sed -i "s/YOUR_TOKEN/${DINGTALK_TOKEN}/g" /opt/monitoring/alertmanager/alertmanager.yml
     
     # 创建 Systemd 服务
     cat > /etc/systemd/system/alertmanager.service << 'EOF'
@@ -407,12 +441,16 @@ deploy_grafana() {
     apt install -y adduser libfontconfig1 musl
     
     # 下载 Grafana
-    if [ ! -f "grafana_10.0.3_amd64.deb" ]; then
-        wget https://dl.grafana.com/oss/release/grafana_10.0.3_amd64.deb
+    if [ ! -f "grafana_${GRAFANA_VERSION}_amd64.deb" ]; then
+        wget --timeout=30 --tries=3 "https://dl.grafana.com/oss/release/grafana_${GRAFANA_VERSION}_amd64.deb"
     fi
     
     # 安装 Grafana
-    dpkg -i grafana_10.0.3_amd64.deb
+    dpkg -i "grafana_${GRAFANA_VERSION}_amd64.deb"
+    
+    # 复制数据源配置（裸机部署使用 localhost）
+    mkdir -p /etc/grafana/provisioning/datasources
+    cp "$(dirname "$0")/../config/grafana/provisioning/datasources/prometheus.yml" /etc/grafana/provisioning/datasources/
     
     # 启动服务
     systemctl start grafana-server
